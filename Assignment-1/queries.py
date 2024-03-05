@@ -6,7 +6,7 @@ queries = ["" for i in range(0, 17)]
 queries[0] = """
 select Id, Reputation, CreationDate,  DisplayName
 from users
-where UpVotes >= 1000
+where upvotes >= 1000
 order by Id asc;
 """
 
@@ -18,14 +18,19 @@ order by Id asc;
 ### Output columns: Id, Title, ViewCount
 ### Order by: Id ascending
 queries[1] = """
-select 0;
+select Id, Title, ViewCount
+from Posts
+where (title ilike '%postgres%' and viewcount >= 50000) or (title ilike '%mongodb%' and viewcount >= 25000)
+order by Id asc;
 """
 
 ### 2. Count the number of the Badges for the user with DisplayName 'JHFB'.
 ###
 ### Output columns: Num_Badges
 queries[2] = """
-select 0;
+select count(*) as Num_Badges
+from users inner join badges on users.id = badges.userid
+where displayname like 'JHFB';
 """
 
 ### 3. Find the Users who have received a "Guru" badge, but not a "Curious" badge.
@@ -36,7 +41,16 @@ select 0;
 ### Output columns: UserId
 ### Order by: UserId ascending
 queries[3] = """
-select 0;
+select UserId
+from users 
+join (select userid, name from badges) badges on users.id = badges.userid
+where name like 'Guru'
+except
+select UserId
+from users 
+join (select userid, name from badges) badges on users.id = badges.userid
+where name like 'Curious'
+order by UserId;
 """
 
 ### 4. "Tags" field in Posts lists out the tags associated with the post in the format "<tag1><tag2>..<tagn>".
@@ -45,7 +59,10 @@ select 0;
 ### Output columns: Id, Title, Tags
 ### Order by Id
 queries[4] = """
-select 0;
+select Id, Title, Tags
+from posts
+where ('<sql-server-2008' = any(string_to_array(tags, '>'))) and (cardinality(string_to_array(tags, '>')) > 4)
+order by id;
 """
 
 ### 5. SQL "with" clause can be used to simplify queries. It essentially allows
@@ -59,11 +76,13 @@ select 0;
 ### Order by Id ascending (there may be more than one answer)
 queries[5] = """
 with temp as (
-        select Users.Id, DisplayName, count(*) as num_badges 
+        select Users.Id as id, DisplayName, count(*) as num_badges 
         from users join badges on (users.id = badges.userid)
-        group by users.id, users.displayname)
+        group by users.id, users.displayname
+        )
 select *
-from temp;
+from temp
+where num_badges = (select max(num_badges) from temp);
 """
 
 ### 6. "With" clauses can be chained together to simplify complex queries. 
@@ -84,9 +103,13 @@ with temp1 as (
 temp2 as (
         select userid, count(*) as num_badges
         from badges
-        group by userid)
-select * 
-from temp1;
+        group by userid) 
+select userid as Id, DisplayName, num_posts as Num_Posts, num_badges as Num_Badges
+from temp1 
+join temp2 on temp1.owneruserid = temp2.userid
+join users on temp2.userid = users.id
+where userid < 100
+order by Id;
 """
 
 ### 7. A problem with the above query is that it may not include users who have no posts or no badges.
@@ -105,8 +128,14 @@ temp2 as (
         select userid, count(*) as num_badges
         from badges
         group by userid)
-select *
-from temp1;
+select users.id as Id, users.displayname as DisplayName, 
+        case when temp1.num_posts is NULL then 0 else temp1.num_posts end as Num_Posts,
+        case when temp2.num_badges is NULL then 0 else temp2.num_badges end as Num_Badges
+from users 
+left outer join temp2 on users.id = temp2.userid
+left outer join temp1 on users.id = temp1.owneruserid
+where users.id < 100
+order by Id;
 """
 
 ### 8. List the users who have made a post in 2009.
@@ -115,7 +144,15 @@ from temp1;
 ### Output Columns: Id, DisplayName
 ### Order by Id ascending
 queries[8] = """
-select 0;
+with temp as (
+        select owneruserid, creationdate
+        from posts
+        where extract(year from creationdate) in ('2009')  
+)
+select id, displayname
+from users 
+join temp on temp.owneruserid = users.id
+order by Id;
 """
 
 ### 9. Find the users who have made a post in 2009 (between 1/1/2009 and 12/31/2009)
@@ -125,7 +162,27 @@ select 0;
 ### Output Columns: Id, DisplayName
 ### Order by Id ascending
 queries[9] = """
-select 0;
+with temp1 as (
+        select owneruserid, creationdate
+        from posts
+        where extract(year from creationdate) in ('2009')  
+),
+temp2 as (
+        select date, userid
+        from badges
+        where extract(year from date) in ('2011')  
+),
+temp3 as (
+        select temp1.owneruserid as Id
+        from temp1
+        intersect
+        select temp2.userid as Id
+        from temp2
+)
+select temp3.Id, users.displayname
+from temp3
+join users on temp3.Id = users.id
+order by Id;
 """
 
 ### 10. Write a query to output a list of posts with comments, such that PostType = 'Moderator nomination' 
@@ -137,7 +194,20 @@ select 0;
 ### Output: Id (Posts), Title, Text (Comments)
 ### Order by: Id ascending
 queries[10] = """
-select 0;
+with temp2 as (
+        select id, posttypeid, title
+        from posts
+        where posttypeid = 6
+),
+temp3 as (
+        select postid, text, score
+        from comments
+        where score >= 10
+)
+select temp3.postid as Id, temp2.title, temp3.text
+from temp2
+join temp3 on temp2.id = temp3.postid
+order by Id;
 """
 
 
@@ -152,16 +222,6 @@ select 0;
 ###
 ### Output columns: Id, DisplayName, Year, Num_Badges
 ### Order by Id ascending, Year ascending
-###
-### NOTE: If the query below fails for you for some reason (it seems to be happening on amd64 image),
-### use this query instead -- the output is identical but years are hardcoded:
-###
-### with temp1 as (
-###      select id, displayname, year
-###      from users, generate_series(2011, 2022) as year
-###      where id in (select userid from badges group by userid having count(*) >= 200))
-### select * from temp1;
-###
 queries[11] = """
 with years as (
         select distinct extract(year from date) as year 
@@ -170,9 +230,44 @@ with years as (
         select id, displayname, year
         from users, years
         where id in (select userid from badges group by userid having count(*) >= 200)
+     ),
+     temp2 as (
+        select userid, count(*) as num_badges
+        from badges
+        group by userid
+        having count(*) >= 200
      )
-select 0;
+select temp1.id, temp1.displayname, temp1.year, temp2.num_badges
+from users 
+join temp2 on temp2.userid = users.id
+join temp1 on temp1.id = temp2.userid
+where users.id = temp1.id
+order by Id, Year;
 """
+# with years as (
+#         select distinct extract(year from date) as year 
+#         from badges),
+#      temp1 as (
+#         select id, displayname, year
+#         from users, years
+#         where id in (select userid from badges group by userid having count(*) >= 200)
+#      ),
+#      temp3 as (
+#         select temp1.id as id, extract(year from date) as year, count(*) as num_badges
+#         from badges
+#         join temp1 on badges.userid = temp1.id and temp1.year = extract(year from badges.date)
+#         group by temp1.id, extract(year from date)
+#      ),
+#      temp4 as (
+#         select id, displayname, extract(year from date) as year, sum(num_badges) as num_badges
+#         from temp3
+#         group by id, displayname, year
+#      )
+# select temp4.id, users.displayname, temp4.year, temp4.num_badges
+# from temp4
+# join users on temp4.id = users.id
+# group by temp4.id, users.displayname, temp4.year, temp4.num_badges
+# order by temp4.id, temp4.year;
 
 ### 12. Find the post(s) that took the longest to answer, i.e., the gap between its creation date
 ### and the creation date of the first answer to it (in number of days). Ignore the posts with no
@@ -183,7 +278,22 @@ select 0;
 ###
 ### Output columns: Id, Title, Gap
 queries[12] = """
-select 0;
+with temp as (
+        select acceptedanswerid, creationdate from posts
+        ),
+        temp3 as (
+                select id, posts.creationdate
+                from posts
+                join temp on posts.id = temp.acceptedanswerid
+        ),
+        temp2 as (
+                select posts.id, posts.title, (temp3.creationdate - posts.creationdate) as gap
+                from posts 
+                join temp3 on posts.acceptedanswerid = temp3.id
+        )
+select id, title, temp2.gap
+from temp2
+where temp2.gap = (select max(gap) as gap from temp2);
 """
 
 
@@ -193,7 +303,25 @@ select 0;
 ### Output columns: Id, Title
 ### Order by: Id ascending
 queries[13] = """
-select 0;
+with temp as (
+        select parentid, title
+        from posts 
+        order by parentid
+        ),
+        temp2 as (
+                select parentid, count(*) as num_posts
+                from temp
+                group by parentid
+                order by num_posts desc
+        ),
+        temp3 as (
+                select parentid, num_posts
+                from temp2
+                where num_posts >= 7
+        )
+select temp3.parentid as id, title
+from temp3 
+join posts on posts.id = temp3.parentid;
 """
 
 ### 14. Find posts such that, between the post and its children (i.e., answers
@@ -204,7 +332,32 @@ select 0;
 ### Output columns: Id, Title
 ### Order by: Id ascending
 queries[14] = """
-select 0;
+with temp as (
+        (select posts.id, count(*) as num_votes
+        from posts 
+        join votes on votes.postid = posts.id
+        where parentid is NULL
+        group by posts.id 
+        order by posts.id )
+        union all
+        (select posts.parentid as id, count(*) as num_votes
+        from posts 
+        join votes on votes.postid = posts.id
+        where parentid is not NULL
+        group by posts.id 
+        order by posts.id )
+        order by id
+        ),
+        temp4 as (
+                select id, sum(num_votes) as total_num_votes
+                from temp
+                group by id
+        )
+select temp4.id, posts.title
+from posts 
+join temp4 on posts.id = temp4.id
+where total_num_votes > 99
+order by temp4.id;
 """
 
 ### 15. Let's see if there is a correlation between the length of a post and the score it gets.
@@ -218,8 +371,32 @@ select 0;
 ###
 ### Output columns: Range_Start, Range_End, Avg_Score
 ### Order by: Range ascending
+
+# Score
 queries[15] = """
-select 0;
+with temp as (
+        select id, score
+        from posts
+        group by id
+        ),
+        temp2 as (
+               select id, length(title) as length
+               from posts
+               where length(title) > 0
+               group by id
+        ),
+        temp3 as (
+                select temp2.id, temp.score, length
+                from temp join temp2 on temp.id = temp2.id
+        ),
+        temp4 as (
+                select floor(temp3.length / 10)*10 as Range_Start, floor(temp3.length / 10)*10 + 9 as Range_End, avg(score) as avg_score
+                from temp3
+                group by temp3.length/10
+        )
+select *
+from temp4
+order by Range_Start;
 """
 
 
@@ -235,5 +412,23 @@ select 0;
 ### Output column order: VoteTypeDescription, Day_of_Week, Num_Votes
 ### Order by VoteTypeDescription asc, Day_of_Week asc
 queries[16] = """
-select 0;
+with temp1 as (
+        select extract('dow' from creationdate) as day_of_week, id
+        from votes
+        group by creationdate, id
+        ),
+        temp2 as (
+                select id, votes.votetypeid, creationdate, description
+                from votes 
+                join votetypes on votes.votetypeid = votetypes.votetypeid
+        ),
+        temp3 as (
+                select votetypeid, description as VoteTypeDescription, day_of_week, count(*) as num_votes
+                from temp2 
+                join temp1 on temp1.id = temp2.id
+                group by votetypeid, day_of_week, description
+        )
+select temp3.VoteTypeDescription, day_of_week, num_votes
+from temp3
+order by VoteTypeDescription, day_of_week;
 """

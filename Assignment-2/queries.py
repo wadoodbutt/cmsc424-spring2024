@@ -24,7 +24,10 @@ order by Id asc;
 ### See: https://www.postgresql.org/docs/current/datatype-enum.html if you are
 ### unsure how to use the enum type
 queries[1] = """
-select 0;
+alter table CommentsCopy
+add column CommentLength integer, 
+add column CommenterDisplayName varchar(40), 
+add column lengthFilter LengthFilterType;
 """
 
 ### 2 [0.25]. Write a single query/statement to set the values of the new columns.
@@ -40,14 +43,32 @@ select 0;
 ### https://www.postgresql.org/docs/current/sql-update.html has examples at the
 ### bottom to show how to update multiple columns in the same query
 queries[2] = """
-select 0;
+update commentscopy
+set Lengthfilter = (
+    case
+        when length(text) > 100 then 'Long'::lengthfiltertype
+        when length(text) >= 50 and length(text) <= 100 then 'Medium'::lengthfiltertype
+        when length(text) < 50 then 'Short'::lengthfiltertype
+    end
+    ),
+    CommentLength = (
+        length(text)
+    ),
+    CommenterDisplayName = (
+        users.displayname
+    )
+from users
+where users.id = commentscopy.userid
+;
 """
 
 
 ### 3 [0.25]. Write a query "delete" all Posts from CommentsCopy where the displayname of the user who 
 ### posted it contains the word "nick" (case insensitive).
 queries[3] = """
-select 0;
+delete from commentscopy
+where commenterdisplayname ilike '%nick%'
+;
 """
 
 ### 4 [0.25]. Use "generate_series" to write a single statement to insert 10 new tuples
@@ -63,7 +84,18 @@ select 0;
 ### 
 ### Use `select * from commentscopy where id >= 50001 and id <=50010;` to confirm.
 queries[4] = """
-select 0;
+insert into commentscopy
+select (50000 + value) as ID, 
+    case when value < 10 then ('Comment 5000' || value) else 'Comment 50010' end as text, 
+    2 as PostId, 
+    0 as Score, 
+    date '2022-10-01' + (value - 1) as CreationDate, 
+    -1 as UserId,
+    NULL as commentlength,
+    NULL as commenterdisplayname,
+    NULL as lengthfilter
+from generate_series(1, 10, 1) value
+;
 """
 
 
@@ -83,7 +115,11 @@ select 0;
 ### and those would need to be taken care of manually first.
 ###
 queries[5] = """
-select 0;
+alter table commentscopy
+    alter column ID set not null,
+    add constraint postid foreign key (PostId) references posts (id),
+    add constraint score check (score >= 0)
+;
 """
 
 ### 6 [0.25]. Write a single query to rank the "Users" by the number of badges, with the User
@@ -91,7 +127,7 @@ select 0;
 ### If there are ties, the two (or more) badges should get the same "rank", and next ranks
 ### should be skipped.
 ###
-### HINT: Use a WITH clause to create a temporary table (temp(PostID, NumBadges)
+### HINT: Use a WITH clause to create a temporary table (temp(UserID, NumBadges)
 ### followed by the appropriate "RANK"
 ### construct -- PostgreSQL has several different
 ### See: https://www.eversql.com/rank-vs-dense_rank-vs-row_number-in-postgresql/, for some
@@ -101,7 +137,21 @@ select 0;
 ### Output Columns: UserID, Rank
 ### Order by: Rank ascending, UserID ascending
 queries[6] = """
-select 0;
+with temp as (
+    select badges.userid, count(*) as nb
+    from badges 
+    group by UserId
+),
+temp2 as (
+    select users.id as UserID,
+        case when nb is NULL then 0 else nb end as NumBadges
+    from users
+    left join temp on temp.userid = users.id
+)
+select temp2.UserId, rank() over(order by NumBadges desc) as Rank
+from temp2
+order by Rank asc, UserID asc
+;
 """
 
 
@@ -119,10 +169,25 @@ select 0;
 ### PostsSummary" will likely be very very slow.
 ### However a query like: select * from PostsSummary where ID = 20;
 ### should run very fast.
-###
+
 ### Ensure that the latter is case (i.e., the query for a single ID runs quickly).
 queries[7] = """
-select 0;
+create view PostsSummary as (
+    select posts.Id, 
+        case when votes.nv is NULL then 0 else votes.nv end NumVotes, 
+        case when comments.nc is NULL then 0 else comments.nc end as NumComments
+    from posts 
+    left join (select postid, count(*) as nv from votes group by postid) votes
+    on posts.id = votes.postid
+    left join (
+        select postid as id, count(*) as nc
+        from comments 
+        group by postid 
+    ) comments
+    on posts.id = comments.id
+    order by posts.id
+)
+;
 """
 
 ### 8 [0.25]. Use window functions to construct a query to associate with each post
@@ -158,7 +223,10 @@ with temp as (
         select ID, title, extract(year from CreationDate) as CreatedYear, extract(month from CreationDate) as CreatedMonth, score
         from posts
         )
-select 0;
+select ID, title, CreatedYear, CreatedMonth, Score, avg(score) over (partition by CreatedMonth, CreatedYear) as AvgScoreForPostsFromThatMonth
+from temp
+order by CreatedYear, CreatedMonth, ID
+;
 """
 
 ### 9 [0.25]. Write a function that takes in the ID of a Post as input, and returns the
@@ -178,7 +246,19 @@ select 0;
 ### will be very slow given the number of posts.
 ###
 queries[9] = """
-select 0;
+create function NumVotes(in integer, out NumVotes bigint)
+    as $$ 
+        with temp as (
+            select postid, count(*) as nv 
+            from votes
+            group by postid
+        )
+        select case when nv is NULL then 0 else nv end as nv
+        from posts 
+        left join temp on posts.id = temp.postid
+        where posts.id = $1 
+    $$ language SQL;
+;
 """
 
 ### 10 [0.5]. Write a function that takes in an Userid as input, and returns a JSON string with 
@@ -188,7 +268,7 @@ select 0;
 ### should return a single tuple with a single attribute of type string/varchar as:
 ###  { "userid": 7,
 ###    "displayname": "Toby",
-###   "osts": [ {"title": "How can a group track database schema changes?", "score": 68, "creationdate": "2011-01-03"},
+###   "posts": [ {"title": "How can a group track database schema changes?", "score": 68, "creationdate": "2011-01-03"},
 ###                {"title": "", "score": 15, "creationdate": "2011-01-03"},
 ###                {"title": "Confirm that my.cnf file has loaded OK", "score": 4, "creationdate": "2011-01-19"}
 ###    ]}
@@ -210,7 +290,23 @@ select 0;
 ### 
 ### Confirm that: 'select userposts(7);' returns the result above.
 queries[10] = """
-select 0;
+create function UserPosts(in integer, out PostsJSON varchar)
+    as $$ 
+        select format('{"userid": %s, "displayname": "%s", "posts": [%s]}', 
+                        users.id, 
+                        displayname,
+                        case when posts.owneruserid is NULL then
+                            ''
+                        else
+                            string_agg( format('{"title": "%s", "score": %s, "creationdate": "%s"}', posts.title, posts.score, posts.creationdate), ',' )
+                        end
+                    )
+        from users
+        left join posts on posts.owneruserid = users.id
+        where users.id = $1
+        group by users.id, owneruserid, displayname
+    $$ language SQL;
+;
 """
 
 ### 11/12 [0.5]. Create a new table using:
@@ -248,26 +344,45 @@ queries[11] = """
 CREATE OR REPLACE FUNCTION UpdateStarUsers()
     RETURNS TRIGGER
     LANGUAGE PLPGSQL
-    AS
-    $$
-    declare 
-        cnt integer;
-    BEGIN
-        if TG_OP = 'DELETE' then
-            select 0;
-        elseif TG_OP = 'INSERT' then
-            select 0;
-        elseif TG_OP = 'UPDATE' then
-            select 0;
-        end if;
-        RETURN NULL;
-    END
-    $$;
-select 0;
+AS $$
+DECLARE 
+    cnt integer;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (SELECT NumBadges FROM StarUsers WHERE old.userid = ID AND NumBadges = 11) THEN
+            DELETE FROM StarUsers WHERE id = old.userid;
+        ELSE
+            UPDATE StarUsers SET NumBadges = NumBadges - 1 WHERE id = old.userid;
+        END IF;
+    ELSIF TG_OP = 'INSERT' THEN
+        IF EXISTS (SELECT ID FROM StarUsers WHERE ID = new.userid) THEN
+            UPDATE StarUsers SET NumBadges = NumBadges + 1 WHERE id = new.userid;
+        ELSIF EXISTS (SELECT count(*) FROM Badges WHERE userid = new.userid GROUP BY UserId HAVING count(*) = 11) THEN
+            INSERT INTO StarUsers (ID, NumBadges) VALUES (new.userid, 11);
+        END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF EXISTS (SELECT ID FROM StarUsers WHERE ID = new.userid) THEN
+            UPDATE StarUsers SET NumBadges = NumBadges + 1 WHERE id = new.userid;
+        ELSIF EXISTS (SELECT count(*) FROM Badges WHERE userid = new.userid GROUP BY UserId HAVING count(*) = 11) THEN
+            INSERT INTO StarUsers (ID, NumBadges) VALUES (new.userid, 11);
+        END IF;
+            
+        IF EXISTS (SELECT NumBadges FROM StarUsers WHERE old.userid = ID AND NumBadges = 11) THEN
+            DELETE FROM StarUsers WHERE id = old.userid;
+        ELSE
+            UPDATE StarUsers SET NumBadges = NumBadges - 1 WHERE id = old.userid;
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$;
 """
 
 queries[12] = """
-select 0;
+create trigger UpdateStarUsers 
+    after insert or update or delete on Badges
+    for each row execute function UpdateStarUsers()
+;
 """
 
 ### 13 [0.25]. The goal here is to write a query to find the total view count of posts for each
@@ -276,16 +391,27 @@ select 0;
 ### So write a query to first convert the "tags" strings into an array (make
 ### sure to account for the "<" and ">" characters appropriately), and then
 ### use "unnest" to create a temporary table with schema: 
-### temp(tag, postid)
+### temp(tag, postid, viewcount)
 ###
+### Given this table, we can find the number of total view count of posts for each tag easily.
+###
+### Output columns: Tag, TotalViewCounts
 ### Order by: TotalViewCounts descending
 ###
 ### Three functions to make this easier: left(), right(), and unnest()
 ### 
-### Given this table, we can find the number of total view count of posts for each tag easily.
-### We have provided that part of the query already. 
 queries[13] = """
-select 0;
+create temporary table temp as
+    select unnest(string_to_array(trim(replace(tags, '<', '')), '>')) as tags,
+        id as postid,
+        viewcount
+    from posts;
+select tags, sum(viewcount) as TotalViewCounts
+from temp 
+where tags <> ''
+group by tags
+order by TotalViewCounts
+;
 """
 
 
@@ -302,6 +428,18 @@ select 0;
 ### for each user. (This query is a bit artificial as the schema lacks a good recursive structure).
 ###
 ### The output should be a table with two columns: parent, ct
+### Order by: parent
 queries[14] = """
-select 0;
+with recursive cte as (
+    select parent, child from Answered
+    union
+    select c.parent, a.child from cte c
+    join Answered a on c.child = a.parent
+)
+select distinct parent, count(*) over (partition by parent) as ct
+from cte
+order by parent
+;
 """
+
+
